@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<title>Home Camera</title>
+	<style type="text/css">
+		html, body {
+			background-color: #111;
+			text-align: center;
+		}
+	</style>
+</head>
+<body>
+	<canvas id="video-canvas"></canvas>
+	<script type="text/javascript" src="jsmpeg.min.js"></script>
+	<script type="text/javascript">
+		var canvas = document.getElementById('video-canvas');
+		var url = 'ws://';
+		if (window.location.protocol.startsWith('https'))
+			url = 'wss://';
+		url += window.location.host;
+		var player = new JSMpeg.Player(url, {canvas: canvas});
+	</script>
+</body>
+</html>
