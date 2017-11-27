@@ -224,25 +224,54 @@ function serveStaticFiles(clientReq, clientRes, options) {
 }
 
 class EsCamG02 {
-	constructor(name, baseUrl, username, password) {
+	constructor(name, hostname, port, username, password) {
 		this.name = name;
-		this.baseUrl = baseUrl;
-		this.username = username;
-		this.password = password;
+		this.options = {
+			method: 'GET',
+			hostname: hostname,
+			port: port,
+			auth: username + ':' + password
+		}
+		this.optionsRight = Object.assign({}, this.options);
+		this.optionsLeft = Object.assign({}, this.options);
+		this.optionsUp = Object.assign({}, this.options);
+		this.optionsDown = Object.assign({}, this.options);
+		this.optionsRight.path = '/web/cgi-bin/hi3510/ptzctrl.cgi?-step=1&-act=right';
+		this.optionsLeft.path = '/web/cgi-bin/hi3510/ptzctrl.cgi?-step=1&-act=left';
+		this.optionsUp.path = '/web/cgi-bin/hi3510/ptzctrl.cgi?-step=1&-act=up';
+		this.optionsDown.path = '/web/cgi-bin/hi3510/ptzctrl.cgi?-step=1&-act=down';
 	}
 	
-	stepRight(callback) {
-	}
-	
-	stepLeft(callback) {
-	}
-	
-	stepUp(callback) {
-	}
-	
-	stepDown(callback) {
+	perform(reqBody, callback) {
+		var options;
+		switch (reqBody.action) {
+			case 'step':
+				switch (reqBody.direction) {
+					case 'right': options = this.optionsRight; break;
+					case 'left': options = this.optionsLeft; break;
+					case 'up': options = this.optionsUp; break;
+					case 'down': options = this.optionsDown; break;
+				}
+				break;
+		}
+		if (options) {
+			var req = http.request(options, function(res) {
+				callback(null, res);
+			});
+			req.on('error', (e) => {
+				console.error('EsCamG02(' + this.name + ') error:' + e.message);
+				callback(e, null);
+			});
+			req.end();
+		}
+		else
+			callback('unsupported action', null);
 	}
 }
+
+const cameras = [
+	new EsCamG02('front', '192.168.1.4', 80, 'admin', 'admin')
+];
 
 const tlsOptions = {
 	key: fs.readFileSync('c:/openssl_ca/server.key'),
@@ -282,8 +311,28 @@ httpServer.on('request', function(clientReq, clientRes) {
 			proxyReq.end();
 		}
 		else if (options.api) {
-			// api
-			clientRes.end();
+			// api - cameras only for now
+			var camera = cameras.find(function (camera) {
+				return (this.resource === camera.name);
+			}, options);
+			if (camera) {
+				camera.perform(options.body, function (error, cameraRes) {
+					if (cameraRes) {
+						clientRes.writeHead(cameraRes.statusCode, { 'content-type': 'text/plain'});
+						cameraRes.pipe(clientRes);
+					}
+					else {
+						clientRes.writeHead(500, { 'content-type': 'application/json' });
+						if (error)
+							clientRes.write(JSON.stringify({ error: error.toString() }));
+						clientRes.end(); // error
+					}
+				});
+			}
+			else {
+				clientRes.statusCode = 404;
+				clientRes.end(); // camera not found
+			}
 		}
 		else {
 			// static files
