@@ -7,6 +7,7 @@ const crypto = require('crypto');
 const stream = require('stream');
 const url = require('url');
 const path = require('path');
+const child_process = require('child_process');
 
 function rewriteUrl(buffer, clientReq, options) {
 	var procotol = clientReq.client.ssl ? 'https://' : 'http://';
@@ -156,17 +157,19 @@ function getOptions(clientReq, callback) {
 		options.api = true;
 		options.resourceType = seps[0];
 		options.resource = seps[1];
-		options.action = seps[2];
+		options.subresource = seps.length > 2 ? seps[2] : null;
 		clientReq.setEncoding('utf8');
-		var rawData = '';
+		var clientPostdata = '';
 		clientReq.on('data', function(chunk) {
-			rawData += chunk; 
+			clientPostdata += chunk; 
 		});
 		clientReq.on('end', function() {
-			try {
-				options.body = JSON.parse(rawData);
-			} catch (e) {
-				console.error(e.message);
+			if (clientPostdata.length > 0) {
+				try {
+					options.body = JSON.parse(clientPostdata);
+				} catch (e) {
+					console.error('JSON parse error (' + e.message + ') on ' + clientPostData);
+				}
 			}
 			return callback(null, options);
 		});
@@ -240,32 +243,128 @@ class EsCamG02 {
 		this.optionsLeft.path = '/web/cgi-bin/hi3510/ptzctrl.cgi?-step=1&-act=left';
 		this.optionsUp.path = '/web/cgi-bin/hi3510/ptzctrl.cgi?-step=1&-act=up';
 		this.optionsDown.path = '/web/cgi-bin/hi3510/ptzctrl.cgi?-step=1&-act=down';
+		this.clients = [];
 	}
 	
-	perform(reqBody, callback) {
+	perform(clientReq, clientRes, clientOptions, callback) {
 		var options;
-		switch (reqBody.action) {
-			case 'step':
-				switch (reqBody.direction) {
-					case 'right': options = this.optionsRight; break;
-					case 'left': options = this.optionsLeft; break;
-					case 'up': options = this.optionsUp; break;
-					case 'down': options = this.optionsDown; break;
+		switch (clientOptions.subresource) {
+			case 'stream':
+				this.addStreamListener(clientRes);
+				return callback(null, null); /* don't send response - already done in addStreamListener */
+			default:
+				switch (clientOptions.body.action) {
+					case 'step':
+						switch (clientOptions.body.direction) {
+							case 'right': options = this.optionsRight; break;
+							case 'left': options = this.optionsLeft; break;
+							case 'up': options = this.optionsUp; break;
+							case 'down': options = this.optionsDown; break;
+						}
+						break;
 				}
-				break;
+				if (options) {
+					var req = http.request(options, function(res) {
+						callback(null, res);
+					});
+					req.on('error', (e) => {
+						console.error('EsCamG02(' + this.name + ') error:' + e.message);
+						callback(e, null);
+					});
+					req.end();
+				}
+				else
+					callback('unsupported action', null);
 		}
-		if (options) {
-			var req = http.request(options, function(res) {
-				callback(null, res);
-			});
-			req.on('error', (e) => {
-				console.error('EsCamG02(' + this.name + ') error:' + e.message);
-				callback(e, null);
-			});
-			req.end();
+	}
+	
+	addStreamListener(client) {
+		var self = this;
+		console.log('EsCamG02(' + this.name + ') client connected (' + client.socket.remoteAddress + ':' + client.socket.remotePort + ')');
+		client.writeHead(200, {
+			'content-type': 'video/webm',
+			'connection': 'close'
+		});
+		client.on('close', function() {
+			console.log('EsCamG02(' + self.name + ') client disconnected (' + client.socket.remoteAddress + ':' + client.socket.remotePort + ')');
+			client.end();
+			var pre = self.clients.length;
+			self.clients = self.clients.filter(function(client) {
+				return (client != this);
+			}, client /* 'this' in filter callback */);
+			assert(self.clients.length < pre);
+			if (self.clients.length == 0) {
+				console.log('EsCamG02(' + self.name + ') no more clients. stopping stream pid(' + self.stream.pid + ')') ;
+				self.stream.kill('SIGTERM');
+				delete self.stream;
+				delete self.streamHeaders;
+			}
+		});
+		if (this.clients.length > 0) {
+			console.log('EsCamG02(' + this.name + ') not first client ' + client.socket.remoteAddress + ':' + client.socket.remotePort);
+			if (this.streamHeaders && this.streamHeaders.length > 1) {
+				this.streamHeaders.forEach(function(header, index) {
+					console.log('EsCamG02(' + self.name + ') sending header[' + index + '] len: '+ header.length);
+					client.write(header);
+				});
+			}
 		}
-		else
-			callback('unsupported action', null);
+		this.clients.push(client);
+		if (this.clients.length == 1) {
+			console.log('EsCamG02(' + this.name + ') first client. starting stream');
+			assert(!this.stream);
+			this.stream = child_process.spawn("ffmpeg", ['-i', 'rtsp://192.168.1.4:554/11', '-quality', 'realtime',
+				'-speed', '5', '-tile-columns', '4', '-frame-parallel', '1', '-threads', '8', '-static-thresh', '0', '-qmin',
+				'4', '-qmax', '48', '-error-resilient', '1', '-codec:v', 'libvpx-vp9', '-c:a', 'libopus', '-r', '23', '-f', 'webm', '-'], {
+				detached: false
+			});
+			/*this.stream = child_process.spawn("ffmpeg", ['-i','.\\www\\cam\\raw.mp4', '-f', 'webm', '-vcodec', 'libvpx', '-r', '29.97', '-vb', '250k', '-acodec',
+				'libvorbis', '-ab', '64k', '-threads', '8', '-'], {
+				detached: false
+			});*/
+			console.log('EsCamG02(' + this.name + ') first client. stream started pid(' + this.stream.pid + ')') ;
+			this.stream.stdout.on('data', function(data) {
+				if (!self.streamHeaders)
+					self.streamHeaders = [];
+				if (self.streamHeaders.length < 2)
+					self.streamHeaders.push(new Buffer(data));
+				self.broadcast(data);
+			}.bind(this.stream));
+			this.stream.stderr.on('data', function(data) {
+				//console.log('stream.stderr: ', data.toString());
+			});
+			this.stream.on('error', function(error) {
+				console.log('EsCamG02(' + self.name + ') stream error pid (' + this.pid + ') error: ' + error.message);
+				if (self.stream && this.pid == self.stream.pid) {
+					self.terminateAllClients();
+					delete self.stream;
+					delete self.streamHeaders;
+				}
+			}.bind(this.stream));
+			this.stream.on('exit', function(code, signal) {
+				console.log('EsCamG02(' + self.name + ') stream exit pid (' + this.pid + ') code(' + code + ') signal(' + signal + ')');
+				if (self.stream && this.pid == self.stream.pid) {
+					self.terminateAllClients();
+					delete self.stream;
+					delete self.streamHeaders;
+				}
+			}.bind(this.stream));
+		}
+	}
+	
+	broadcast(data) {
+		var self = this;
+		this.clients.forEach(function(client) {
+			console.log('EsCamG02(' + self.name + ') broadcasting to client ' + client.socket.remoteAddress + ':' + client.socket.remotePort);
+			client.write(data);
+		});
+	}
+	
+	terminateAllClients() {
+		this.clients.forEach(function(client) {
+			client.end();
+		});
+		this.clients = [];
 	}
 }
 
@@ -316,12 +415,12 @@ httpServer.on('request', function(clientReq, clientRes) {
 				return (this.resource === camera.name);
 			}, options);
 			if (camera) {
-				camera.perform(options.body, function (error, cameraRes) {
+				camera.perform(clientReq, clientRes, options, function(error, cameraRes) {
 					if (cameraRes) {
 						clientRes.writeHead(cameraRes.statusCode, { 'content-type': 'text/plain'});
 						cameraRes.pipe(clientRes);
 					}
-					else {
+					else if (error) {
 						clientRes.writeHead(500, { 'content-type': 'application/json' });
 						if (error)
 							clientRes.write(JSON.stringify({ error: error.toString() }));
