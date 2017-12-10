@@ -1,5 +1,6 @@
 const http = require('http');
 const https = require('https');
+const ws = require('ws');
 const fs = require('fs');
 const zlib = require('zlib');
 const assert = require('assert');
@@ -8,6 +9,7 @@ const stream = require('stream');
 const url = require('url');
 const path = require('path');
 const child_process = require('child_process');
+const config = require('./config.js');
 
 function rewriteUrl(buffer, clientReq, options) {
 	var procotol = clientReq.client.ssl ? 'https://' : 'http://';
@@ -214,21 +216,22 @@ function sendFile(pathname, clientRes) {
 }		
 
 function serveStaticFiles(clientReq, clientRes, options) {
-	// parse URL
-	const parsedUrl = url.parse(clientReq.url);
-	// extract URL path
-	let pathname = `.${parsedUrl.pathname}`;
-	// based on the URL path, extract the file extention. e.g. .js, .doc, ...
-	const ext = path.parse(pathname).ext;
-	
-	fs.exists(pathname, function (exist) {
+	var parsedUrl = url.parse(clientReq.url);
+	var pathname = path.join(config.WWW_ROOT, parsedUrl.pathname);
+	// deny request for parent of WWW_ROOT
+	if (path.relative(config.WWW_ROOT, pathname).includes('..')) {
+		clientRes.statusCode = 403;
+		return clientRes.end();
+	}
+	var ext = path.parse(pathname).ext;
+	fs.exists(pathname, function(exist) {
 		if (!exist) {
-			var seps = pathname.split('/') || [];
+			var seps = pathname.split(path.sep) || [];
 			// if the file is not found, first check if this is a request for dash manifest
-			// ./www/webm_live/<camera_name>/manifest.mpd
-			if (ext === '.mpd' && seps.length === 5) {
+			// /www/webm_live/<camera_name>/manifest.mpd
+			if (ext === '.mpd' && seps.length === 4) {
 				var camera = cameras.find(function(camera) {
-					return (seps[3] === camera.name);
+					return (seps[2] === camera.name);
 				}, options);
 				if (camera) {
 					return camera.generateDashManifest(clientReq, clientRes, pathname, function(error) {
@@ -243,7 +246,7 @@ function serveStaticFiles(clientReq, clientRes, options) {
 			}
 			// return 404
 			clientRes.statusCode = 404;
-			return clientRes.end(`File ${pathname} not found!`);
+			return clientRes.end('not found');
 		}
 		cameras.forEach(function(camera) {
 			camera.checkDashRequest(clientReq); // update dash request flag 
@@ -253,7 +256,7 @@ function serveStaticFiles(clientReq, clientRes, options) {
 }
 
 class EsCamG02 {
-	constructor(name, hostname, port, username, password) {
+	constructor(name, hostname, port, rtspPort, username, password, httpServer) {
 		this.className = this.constructor.name;
 		this.name = name;
 		this.options = {
@@ -262,6 +265,7 @@ class EsCamG02 {
 			port: port,
 			auth: username + ':' + password
 		}
+		this.rtspUrl = 'rtsp://' + hostname + ':' + rtspPort + '/11';
 		this.optionsRight = Object.assign({}, this.options);
 		this.optionsLeft = Object.assign({}, this.options);
 		this.optionsUp = Object.assign({}, this.options);
@@ -270,15 +274,16 @@ class EsCamG02 {
 		this.optionsLeft.path = '/web/cgi-bin/hi3510/ptzctrl.cgi?-step=1&-act=left';
 		this.optionsUp.path = '/web/cgi-bin/hi3510/ptzctrl.cgi?-step=1&-act=up';
 		this.optionsDown.path = '/web/cgi-bin/hi3510/ptzctrl.cgi?-step=1&-act=down';
-		this.clients = [];
+		this.vpxClients = [];
+		this.setupJsMpegStream(httpServer);
 	}
 	
 	perform(clientReq, clientRes, clientOptions, callback) {
 		var options;
 		switch (clientOptions.subresource) {
 			case 'stream':
-				this.addStreamListener(clientRes);
-				return callback(null, null); /* don't send response - already done in addStreamListener */
+				this.addVpxClient(clientRes);
+				return callback(null, null); /* don't send response - already done in addVpxClient */
 			default:
 				switch (clientOptions.body.action) {
 					case 'step':
@@ -315,30 +320,30 @@ class EsCamG02 {
 	// i think this is due to the missing header that only occur at the beginning of the stream. i've tried
 	// to save the first 2 buffers and prepend these to every new connections but it doesn't work.. perhaps
 	// MPEG DASH is the only solution to achieve vp9 live streaming. see below)
-	addStreamListener(client) {
+	addVpxClient(client) {
 		var self = this;
-		console.log('EsCamG02(' + this.name + ') client connected (' + client.socket.remoteAddress + ':' + client.socket.remotePort + ')');
+		console.log('EsCamG02(' + this.name + ') vpx client connected (' + client.socket.remoteAddress + ':' + client.socket.remotePort + ')');
 		client.writeHead(200, {
 			'content-type': 'video/webm',
 			'connection': 'close'
 		});
 		client.on('close', function() {
-			console.log('EsCamG02(' + self.name + ') client disconnected (' + client.socket.remoteAddress + ':' + client.socket.remotePort + ')');
+			console.log('EsCamG02(' + self.name + ') vpx client disconnected (' + client.socket.remoteAddress + ':' + client.socket.remotePort + ')');
 			client.end();
-			var pre = self.clients.length;
-			self.clients = self.clients.filter(function(client) {
+			var pre = self.vpxClients.length;
+			self.vpxClients = self.vpxClients.filter(function(client) {
 				return (client != this);
 			}, client /* 'this' in filter callback */);
-			assert(self.clients.length < pre);
-			if (self.clients.length == 0) {
-				console.log('EsCamG02(' + self.name + ') no more clients. stopping stream pid(' + self.stream.pid + ')') ;
-				self.stream.kill('SIGTERM');
-				delete self.stream;
+			assert(self.vpxClients.length < pre);
+			if (self.vpxClients.length == 0) {
+				console.log('EsCamG02(' + self.name + ') no more vpx clients. stopping stream pid(' + self.vpxStream.pid + ')') ;
+				self.vpxStream.kill('SIGTERM');
+				delete self.vpxStream;
 				delete self.streamHeaders;
 			}
 		});
-		if (this.clients.length > 0) {
-			console.log('EsCamG02(' + this.name + ') not first client ' + client.socket.remoteAddress + ':' + client.socket.remotePort);
+		if (this.vpxClients.length > 0) {
+			console.log('EsCamG02(' + this.name + ') not first vpx client ' + client.socket.remoteAddress + ':' + client.socket.remotePort);
 			if (this.streamHeaders && this.streamHeaders.length > 1) {
 				this.streamHeaders.forEach(function(header, index) {
 					console.log('EsCamG02(' + self.name + ') sending header[' + index + '] len: '+ header.length);
@@ -346,60 +351,126 @@ class EsCamG02 {
 				});
 			}
 		}
-		this.clients.push(client);
-		if (this.clients.length == 1) {
-			console.log('EsCamG02(' + this.name + ') first client. starting stream');
-			assert(!this.stream);
-			this.stream = child_process.spawn("ffmpeg", ['-i', 'rtsp://192.168.1.4:554/11', '-quality', 'realtime',
+		this.vpxClients.push(client);
+		if (this.vpxClients.length == 1) {
+			console.log('EsCamG02(' + this.name + ') first vpx client. starting stream');
+			assert(!this.vpxStream);
+			this.vpxStream = child_process.spawn("ffmpeg", ['-i', this.rtspUrl, '-quality', 'realtime',
 				'-speed', '5', '-tile-columns', '4', '-frame-parallel', '1', '-threads', '8', '-static-thresh', '0', '-qmin',
 				'4', '-qmax', '48', '-error-resilient', '1', '-codec:v', 'libvpx-vp9', '-c:a', 'libopus', '-r', '23', '-f', 'webm', '-'], {
 				detached: false
 			});
-			console.log('EsCamG02(' + this.name + ') first client. stream started pid(' + this.stream.pid + ')') ;
-			this.stream.stdout.on('data', function(data) {
+			console.log('EsCamG02(' + this.name + ') first vpx client. stream started pid(' + this.vpxStream.pid + ')') ;
+			this.vpxStream.stdout.on('data', function(data) {
 				// save first 2 buffers as i believe these contain the headers. prepend these to all subsequent connections that
 				// join mid-stream. doesn't work :/
 				if (!self.streamHeaders)
 					self.streamHeaders = [];
 				if (self.streamHeaders.length < 2)
 					self.streamHeaders.push(new Buffer(data));
-				self.broadcast(data);
-			}.bind(this.stream));
-			this.stream.stderr.on('data', function(data) {
+				self.broadcastVpxClients(data);
+			});
+			this.vpxStream.stderr.on('data', function(data) {
 				//console.log('stream.stderr: ', data.toString());
 			});
-			this.stream.on('error', function(error) {
-				console.log('EsCamG02(' + self.name + ') stream error pid (' + this.pid + ') error: ' + error.message);
-				if (self.stream && this.pid == self.stream.pid) {
-					self.terminateAllClients();
-					delete self.stream;
+			this.vpxStream.on('error', function(error) {
+				console.log('EsCamG02(' + self.name + ') vpx stream error pid (' + this.pid + ') error: ' + error.message);
+				if (self.vpxStream && this.pid == self.vpxStream.pid) {
+					self.terminateVpxClients();
+					delete self.vpxStream;
 					delete self.streamHeaders;
 				}
-			}.bind(this.stream));
-			this.stream.on('exit', function(code, signal) {
-				console.log('EsCamG02(' + self.name + ') stream exit pid (' + this.pid + ') code(' + code + ') signal(' + signal + ')');
-				if (self.stream && this.pid == self.stream.pid) {
-					self.terminateAllClients();
-					delete self.stream;
+			}.bind(this.vpxStream)); // bind the stream object so we can match in the callback. sometimes a quick connect and disconnect may result in self.vpxStream referring to the new instance in callback.
+			this.vpxStream.on('exit', function(code, signal) {
+				console.log('EsCamG02(' + self.name + ') vpx stream exit pid (' + this.pid + ') code(' + code + ') signal(' + signal + ')');
+				if (self.vpxStream && this.pid == self.vpxStream.pid) {
+					self.terminateVpxClients();
+					delete self.vpxStream;
 					delete self.streamHeaders;
 				}
-			}.bind(this.stream));
+			}.bind(this.vpxStream)); // bind the stream object so we can match in the callback. sometimes a quick connect and disconnect may result in self.vpxStream referring to the new instance in callback.
 		}
 	}
 	
-	broadcast(data) {
+	// Jsmpeg live stream -- mpeg1 video over web socket
+	// Sets up the web socket server to listen for incoming ws request. The clients
+	// use jsmpeg to decode the mpeg1 video.
+	setupJsMpegStream(httpServer) {
 		var self = this;
-		this.clients.forEach(function(client) {
+		assert(!this.jsmpegWsServer);
+		this.jsmpegWsServer = new ws.Server({
+			server: httpServer,
+			path: '/api/camera/' + this.name + '/jsmpegstream'
+		});
+		this.jsmpegWsServer.on('connection', function(socket) {
+			self.onJsmpegClientConnect(socket);
+		});
+	}
+	
+	onJsmpegClientConnect(socket) {
+		var self, streamHeader;
+		self = this;
+		console.log('EsCamG02(' + self.name + ') web socket connection ' + socket._socket.remoteAddress + ' (' + this.jsmpegWsServer.clients.length + ' total)');
+		streamHeader = new Buffer(8);
+		streamHeader.write('jsmp');
+		streamHeader.writeUInt16BE(this.width, 4);
+		streamHeader.writeUInt16BE(this.height, 6);
+		socket.send(streamHeader, { binary: true });
+		if (self.jsmpegWsServer.clients.length === 1) {
+			assert(!self.jsmpegStream);
+			self.jsmpegStream = child_process.spawn('ffmpeg',  ['-i', self.rtspUrl, '-f', 'mpegts', '-codec:v', 'mpeg1video', '-bf', '0', '-codec:a', 'mp2', '-r', '30', '-'], {
+				detached: false
+			});
+			self.jsmpegStream.stdout.on('data', function(data) {
+				self.jsmpegWsServer.clients.forEach(function(client) {
+					if (client.readyState === ws.OPEN)
+						client.send(data);
+				});
+			});
+			self.jsmpegStream.stderr.on('data', function(data) {
+				console.log('EsCamG02(' + self.name + ') jsmpeg stderr: ' + data.toString());
+			});
+			self.jsmpegStream.on('error', function(error) {
+				console.log('EsCamG02(' + self.name + ') jsmpeg stream error pid (' + this.pid + ') error: ' + error.message);
+				if (self.jsmpegStream && this.pid == self.jsmpegStream.pid)
+					self.terminateJsmpegStream();
+			}.bind(self.jsmpegStream)); // bind the stream object so we can match in the callback. sometimes a quick connect and disconnect may result in self.jsmpegStream referring to the new instance in callback.
+			self.jsmpegStream.on('exit', function(code, signal) {
+				console.log('EsCamG02(' + self.name + ') jsmpeg stream exit pid (' + this.pid + ') code(' + code + ') signal(' + signal + ')');
+				if (self.jsmpegStream && this.pid == self.jsmpegStream.pid)
+					self.terminateJsmpegStream();
+			}.bind(self.jsmpegStream)); // bind the stream object so we can match in the callback. sometimes a quick connect and disconnect may result in self.jsmpegStream referring to the new instance in callback.
+		}
+		socket.on('close', function(code, message) {
+			console.log('EsCamG02(' + self.name + ') web socket disconnected ' + this._socket.remoteAddress + ' (' + self.jsmpegWsServer.clients.length + ' total)');
+			if (self.jsmpegWsServer.clients.length === 0)
+				self.terminateJsmpegStream();
+		});
+	}
+	
+	terminateJsmpegStream() {
+		if (this.jsmpegStream) {
+			this.jsmpegStream.kill('SIGTERM');
+			delete this.jsmpegStream;
+		}
+		this.jsmpegWsServer.clients.forEach(function(client) {
+			client.terminate();
+		});
+	}
+	
+	broadcastVpxClients(data) {
+		var self = this;
+		self.vpxClients.forEach(function(client) {
 			console.log('EsCamG02(' + self.name + ') broadcasting to client ' + client.socket.remoteAddress + ':' + client.socket.remotePort);
 			client.write(data);
 		});
 	}
 	
-	terminateAllClients() {
-		this.clients.forEach(function(client) {
+	terminateVpxClients() {
+		this.vpxClients.forEach(function(client) {
 			client.end();
 		});
-		this.clients = [];
+		this.vpxClients.splice(0, this.vpxClients.length);
 	}
 	
 	deleteFolderRecursive(path) {
@@ -428,26 +499,26 @@ class EsCamG02 {
 			// another client has initiated the manifest generation
 			// just wait 10s for the manifest file to be ready
 			return setTimeout(function() {
-				if (!fs.existsSync('www/webm_live/' + self.name + '/glass_live_manifest.mpd'))
+				if (!fs.existsSync(path.join(config.WWW_ROOT, config.WEBM_CACHE, self.name, 'glass_live_manifest.mpd')))
 					return callback({'message':'Failed to generate manifest'});
 				callback(null);
-			}, 10000);
+			}, 15000);
 		}
-		self.deleteFolderRecursive('www/webm_live/' + self.name); // this folder is not expected to exist. assert instead?
-		fs.mkdir('www/webm_live/' + self.name, function(error) {
+		self.deleteFolderRecursive(path.join(config.WWW_ROOT, config.WEBM_CACHE, self.name)); // this folder is not expected to exist. assert instead?
+		fs.mkdir(path.join(config.WWW_ROOT, config.WEBM_CACHE, self.name), function(error) {
 			if (error)
 				return callback(error);
 			// run first ffmpeg command to generate chunks and header files, this process will keep running
 			// to generate chunks continuously.
-			// TODO: set a timeout and kill this process when no more clients request for chunk files.
-			self.dashProcess = child_process.spawn("ffmpeg", [ '-rtsp_transport', 'tcp', '-i', 'rtsp://192.168.1.4:554/11',
-				'-map', '0:0', '-c:v', 'libvpx-vp9', '-keyint_min', '40', '-g', '40', '-r', '20', '-speed', '6', '-tile-columns', '4',
+			self.dashProcess = child_process.spawn("ffmpeg", [ '-rtsp_transport', 'tcp', '-i', self.rtspUrl,
+				'-map', '0:0', '-c:v', 'libvpx-vp9', '-keyint_min', '40', '-g', '40', '-r', '20', '-speed', '5', '-tile-columns', '4', '-qmin', '4', '-qmax', '48',
 				'-frame-parallel', '1', '-threads', '8', '-static-thresh', '0', '-max-intra-rate', '300', '-deadline', 'realtime',
-				'-lag-in-frames', '0', '-error-resilient', '1', '-f', 'webm_chunk', '-header', 'www/webm_live/' + self.name + '/glass_360.hdr',
-				'-chunk_start_index', '1', 'www/webm_live/' + self.name + '/glass_360_%d.chk','-map', '0:1', '-c:a', 'libvorbis', '-f', 'webm_chunk',
-				'-audio_chunk_duration', '2000', '-header', 'www/webm_live/' + self.name + '/glass_171.hdr', '-chunk_start_index', '1',
-				'www/webm_live/' + self.name + '/glass_171_%d.chk' ], {
-				detached: false
+				'-lag-in-frames', '0', '-error-resilient', '1', '-f', 'webm_chunk', '-header', config.WEBM_CACHE + '/' + self.name + '/' + 'glass_360.hdr',
+				'-chunk_start_index', '1', config.WEBM_CACHE + '/' + self.name + '/' + 'glass_360_%d.chk', '-map', '0:1', '-c:a', 'libopus', '-f', 'webm_chunk',
+				'-audio_chunk_duration', '2000', '-header', config.WEBM_CACHE + '/' + self.name + '/' + 'glass_171.hdr', '-chunk_start_index', '1',
+				config.WEBM_CACHE + '/' + self.name + '/' + 'glass_171_%d.chk' ], {
+				detached: false,
+				cwd: config.WWW_ROOT
 			});
 			self.dashProcess.stderr.on('data', function(data) {
 				//console.log('dashProcess.stderr: ', data.toString());
@@ -463,16 +534,19 @@ class EsCamG02 {
 			});
 			// wait 10s for header files to be generated as these are the required inuput for the second ffmpeg command
 			setTimeout(function() {
-				if (!fs.existsSync('www/webm_live/' + self.name + '/glass_360.hdr'))
+				if (!fs.existsSync(path.join(config.WWW_ROOT, config.WEBM_CACHE, self.name, 'glass_360.hdr')))
 					return callback({'message':'Failed to generate headers'});
 				// run second ffmpeg command to generate manifest. this command exits immediately after manifest is generated
+				// NOTE: do not use path.join to form the path arguments for this ffmpeg command or the generated manifest will contains invalid paths
+				//       ffmpeg command doesn't like '\' as path separator
 				self.dashManifestProcess = child_process.spawn("ffmpeg", [ '-f', 'webm_dash_manifest', '-live', '1',
-					'-i', 'www/webm_live/' + self.name + '/glass_360.hdr', '-f', 'webm_dash_manifest', '-live', '1', '-i',
-					'www/webm_live/' + self.name + '/glass_171.hdr', '-c', 'copy', '-map', '0', '-map', '1', '-f', 'webm_dash_manifest',
+					'-i', config.WEBM_CACHE + '/' + self.name + '/' + 'glass_360.hdr', '-f', 'webm_dash_manifest', '-live', '1', '-i',
+					config.WEBM_CACHE + '/' + self.name + '/' + 'glass_171.hdr', '-c', 'copy', '-map', '0', '-map', '1', '-f', 'webm_dash_manifest',
 					'-live', '1', '-adaptation_sets', 'id=0,streams=0 id=1,streams=1', '-chunk_start_index', '1',
 					'-chunk_duration_ms', '2000', '-time_shift_buffer_depth', '7200', '-minimum_update_period', '7200',
-					'www/webm_live/' + self.name + '/glass_live_manifest.mpd' ], {
-					detached: false
+					config.WEBM_CACHE + '/' + self.name + '/' + 'glass_live_manifest.mpd' ], {
+					detached: false,
+					cwd: config.WWW_ROOT
 				});
 				self.dashManifestProcess.stderr.on('data', function(data) {
 					console.log('dashManifestProcess.stderr: ', data.toString());
@@ -503,7 +577,7 @@ class EsCamG02 {
 	
 	// update dashChunkRequested flag that the checkCleanupDash timer checks every interval 
 	checkDashRequest(clientReq) {
-		if (clientReq.url.match('^/www/webm_live/' + this.name + '/.*?\.chk$'))
+		if (clientReq.url.match('^/' + config.WEBM_CACHE + '/' + this.name + '/.*?\.chk$'))
 			this.dashChunkRequested = true;
 	}
 	
@@ -525,25 +599,28 @@ class EsCamG02 {
 			this.dashProcess.kill('SIGTERM');
 			delete this.dashProcess;
 		}
-		this.deleteFolderRecursive('www/webm_live/' + this.name);
+		this.deleteFolderRecursive(path.join(config.WWW_ROOT, config.WEBM_CACHE, this.name));
 	}
 }
 
+var httpServer;
+try {
+	httpServer = https.createServer({
+		cert: fs.readFileSync(config.TLS_SERVER_CERT),
+		key: fs.readFileSync(config.TLS_SERVER_KEY),
+		ca: fs.readFileSync(config.TLS_CA_CERT),
+		requestCert: true,
+		rejectUnauthorized: true
+	});
+}
+catch (error) {
+	console.log('Unable to create secure HTTPS server: ' + error.message + '. Check if certificates and keys exist.');
+	httpServer = http.createServer();
+}
+
 const cameras = [
-	new EsCamG02('front', '192.168.1.4', 80, 'admin', 'admin')
+	new EsCamG02('front', '192.168.1.2', 80, 554, 'admin', 'admin', httpServer)
 ];
-
-const tlsOptions = {
-	key: fs.readFileSync('c:/openssl_ca/server.key'),
-	cert: fs.readFileSync('c:/openssl_ca/server.pem'),
-	ca: fs.readFileSync('c:/openssl_ca/ca.pem'),
-	requestCert: true,
-	rejectUnauthorized: true
-};
-
-
-var httpServer = https.createServer(tlsOptions);
-//var httpServer = http.createServer();
 
 httpServer.on('request', function(clientReq, clientRes) {
 	getOptions(clientReq, function(err, options) {
@@ -600,15 +677,10 @@ httpServer.on('request', function(clientReq, clientRes) {
 		}
 	});
 })
+.on('tlsClientError', function(error, socket) {
+	console.log('TLS handshake failed: ' + error.message.trim());
+})
 .on('listening', function() {
-	console.log('listening');
+	console.log('Server listening on ' + this._connectionKey);
 })
 .listen(3000);
-
-Stream = require('../node-rtsp-stream');
-var ws = new Stream({
-    name: 'name',
-	ffmpegArgs: ['-i', 'rtsp://192.168.1.4:554/11', '-f', 'mpegts', '-codec:v', 'mpeg1video', '-bf', '0', '-codec:a', 'mp2', '-r', '30', '-'],
-	httpServer: httpServer
-});
-

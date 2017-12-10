@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<title>Home Camera</title>
+	<style type="text/css">
+		html, body {
+			background-color: #111;
+			text-align: center;
+		}
+	</style>
+	<script>
+function onVideoPlay() {
+	console.log("can play");
+	var vid = document.getElementById("front");
+}
+	</script>
+</head>
+<body>
+	<video id="front" type="video/webm" src="/api/camera/front/stream" onplay="onVideoPlay()" controls></video>
+</body>
+</html>
