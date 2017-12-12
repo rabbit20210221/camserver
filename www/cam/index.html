@@ -8,12 +8,24 @@
 			text-align: center;
 		}
 	</style>
+	<script type="text/javascript" src="jsmpeg.min.js"></script>
+	<script type="text/javascript" src="api.js"></script>
 </head>
 <body>
-	<canvas id="video-canvas"></canvas>
-	<script type="text/javascript" src="jsmpeg.min.js"></script>
+	<canvas id="front"></canvas>
 	<script type="text/javascript">
-		var canvas = document.getElementById('video-canvas');
+		function onResize(element, initialWidth, initialHeight, callback) {
+		  setTimeout(function(){
+			  if( element.height !== initialHeight && element.width !== initialWidth )
+				callback();
+			  else
+			    onResize(element, initialWidth, initialHeight, callback);
+		  }, 1000);
+		}
+		var canvas = document.getElementById('front');
+		onResize(canvas, canvas.width, canvas.height, function() {
+			setupApiHooks('front'); 
+		});
 		var url = 'ws://';
 		if (window.location.protocol.startsWith('https'))
 			url = 'wss://';

@@ -410,25 +410,29 @@ class EsCamG02 {
 	onJsmpegClientConnect(socket) {
 		var self, streamHeader;
 		self = this;
-		console.log('EsCamG02(' + self.name + ') web socket connection ' + socket._socket.remoteAddress + ' (' + this.jsmpegWsServer.clients.length + ' total)');
+		console.log('EsCamG02(' + self.name + ') web socket connection ' + socket._socket.remoteAddress + ' (' + this.jsmpegWsServer.clients.size + ' total)');
 		streamHeader = new Buffer(8);
 		streamHeader.write('jsmp');
 		streamHeader.writeUInt16BE(this.width, 4);
 		streamHeader.writeUInt16BE(this.height, 6);
 		socket.send(streamHeader, { binary: true });
-		if (self.jsmpegWsServer.clients.length === 1) {
+		if (self.jsmpegWsServer.clients.size === 1) {
 			assert(!self.jsmpegStream);
-			self.jsmpegStream = child_process.spawn('ffmpeg',  ['-i', self.rtspUrl, '-f', 'mpegts', '-codec:v', 'mpeg1video', '-bf', '0', '-codec:a', 'mp2', '-r', '30', '-'], {
+			self.jsmpegStream = child_process.spawn('ffmpeg',  ['-i', self.rtspUrl, '-f', 'mpegts', '-codec:v', 'mpeg1video', '-bf', '0', '-codec:a', 'mp2', '-ar', '44100', '-ac', '1', '-b:a', '128k', '-r', '23', '-'], {
 				detached: false
 			});
 			self.jsmpegStream.stdout.on('data', function(data) {
 				self.jsmpegWsServer.clients.forEach(function(client) {
-					if (client.readyState === ws.OPEN)
-						client.send(data);
+					if (client.readyState === ws.OPEN) {
+						try {
+							client.send(data);
+						}
+						catch (error) {}
+					}
 				});
 			});
 			self.jsmpegStream.stderr.on('data', function(data) {
-				console.log('EsCamG02(' + self.name + ') jsmpeg stderr: ' + data.toString());
+				//console.log('EsCamG02(' + self.name + ') jsmpeg stderr: ' + data.toString());
 			});
 			self.jsmpegStream.on('error', function(error) {
 				console.log('EsCamG02(' + self.name + ') jsmpeg stream error pid (' + this.pid + ') error: ' + error.message);
@@ -442,8 +446,8 @@ class EsCamG02 {
 			}.bind(self.jsmpegStream)); // bind the stream object so we can match in the callback. sometimes a quick connect and disconnect may result in self.jsmpegStream referring to the new instance in callback.
 		}
 		socket.on('close', function(code, message) {
-			console.log('EsCamG02(' + self.name + ') web socket disconnected ' + this._socket.remoteAddress + ' (' + self.jsmpegWsServer.clients.length + ' total)');
-			if (self.jsmpegWsServer.clients.length === 0)
+			console.log('EsCamG02(' + self.name + ') web socket disconnected ' + this._socket.remoteAddress + ' (' + self.jsmpegWsServer.clients.size + ' total)');
+			if (self.jsmpegWsServer.clients.size === 0)
 				self.terminateJsmpegStream();
 		});
 	}
@@ -619,7 +623,7 @@ catch (error) {
 }
 
 const cameras = [
-	new EsCamG02('front', '192.168.1.2', 80, 554, 'admin', 'admin', httpServer)
+	new EsCamG02('front', '192.168.1.20', 80, 554, 'admin', 'admin', httpServer)
 ];
 
 httpServer.on('request', function(clientReq, clientRes) {
