@@ -75,7 +75,7 @@ class EsCamG02 {
 	}
 	
 	generateDashManifest(clientReq, clientRes, pathname, callback) {
-		this.mpegDashStream.generateManifest(clientReq, clientRes, pathname, callback);
+		return this.mpegDashStream.generateManifest(clientReq, clientRes, pathname, callback);
 	}
 	
 	checkDashRequest(clientReq) {

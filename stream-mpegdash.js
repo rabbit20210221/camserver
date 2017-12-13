@@ -1,8 +1,9 @@
 const child_process = require('child_process');
 const assert = require('assert');
 const fs = require('fs');
-const config = require('./config.js');
 const path = require('path');
+const config = require('./config.js');
+const Promise = require('./promise.js');
 
 // Mpeg DASH -- Dynamic Adaptive Streaming over HTTP (https://github.com/Dash-Industry-Forum/dash.js/wiki)
 // this method is called in response to a request for mpeg dash manifest that does not exist yet.
@@ -14,23 +15,21 @@ class MpegDashStream {
 	constructor(name, rtspUrl) {
 		this.name = name;
 		this.rtspUrl = rtspUrl;
+		this.promises = [];
 	}
 
-	generateManifest(clientReq, clientRes, pathname, callback) {
+	generateManifest(clientReq, clientRes, pathname) {
 		var self = this;
+		var promise = new Promise();
+		self.promises.push(promise);
 		if (self.dashProcess) {
 			// another client has initiated the manifest generation
-			// just wait 10s for the manifest file to be ready
-			return setTimeout(function() {
-				if (!fs.existsSync(path.join(config.WWW_ROOT, config.WEBM_CACHE, self.name, 'glass_live_manifest.mpd')))
-					return callback({'message':'Failed to generate manifest'});
-				callback(null);
-			}, 15000);
+			return promise;
 		}
 		self.deleteFolderRecursive(path.join(config.WWW_ROOT, config.WEBM_CACHE, self.name)); // this folder is not expected to exist. assert instead?
 		fs.mkdir(path.join(config.WWW_ROOT, config.WEBM_CACHE, self.name), function(error) {
 			if (error)
-				return callback(error);
+				self.fullfillPromises(error, null);
 			// run first ffmpeg command to generate chunks and header files, this process will keep running
 			// to generate chunks continuously.
 			self.dashProcess = child_process.spawn("ffmpeg", [ '-rtsp_transport', 'tcp', '-i', self.rtspUrl,
@@ -57,8 +56,10 @@ class MpegDashStream {
 			});
 			// wait 10s for header files to be generated as these are the required inuput for the second ffmpeg command
 			setTimeout(function() {
-				if (!fs.existsSync(path.join(config.WWW_ROOT, config.WEBM_CACHE, self.name, 'glass_360.hdr')))
-					return callback({'message':'Failed to generate headers'});
+				if (!fs.existsSync(path.join(config.WWW_ROOT, config.WEBM_CACHE, self.name, 'glass_360.hdr'))) {
+					self.fullfillPromises({'message':'Failed to generate headers'}, null);
+					return self.terminate();
+				}
 				// run second ffmpeg command to generate manifest. this command exits immediately after manifest is generated
 				// NOTE: do not use path.join to form the path arguments for this ffmpeg command or the generated manifest will contains invalid paths
 				//       ffmpeg command doesn't like '\' as path separator
@@ -79,7 +80,7 @@ class MpegDashStream {
 				});
 				self.dashManifestProcess.on('error', function(error) {
 					self.terminate();
-					callback(error);
+					self.fullfillPromises(error, null);
 				});
 				// second ffmpeg command is expected to exit when the manifest file has been generated.
 				// check for success exit code (0) and invoke the callback to return the manifest to client.
@@ -88,14 +89,22 @@ class MpegDashStream {
 					if (!self.dashManifestProcess)
 						return;
 					if (code === 0)
-						return callback(null); // success
+						return self.fullfillPromises(null, config.WWW_ROOT + '/' + config.WEBM_CACHE + '/' + self.name + '/' + 'glass_live_manifest.mpd'); // success
 					// failure: exit code != 0
+					self.fullfillPromises({'message':'Failed to generate manifest'}, null);
 					self.terminate();
-					callback({'message':'Failed to generate manifest'});
 				});
 			}, 10000);
-			setTimeout(self.checkCleanup.bind(self), 60000);
+			//setTimeout(self.checkCleanup.bind(self), 60000);
 		});
+		return promise;
+	}
+	
+	fullfillPromises(error, result) {
+		this.promises.forEach(function(promise) {
+			promise.fullfill(error, result);
+		});
+		this.promises = [];
 	}
 	
 	// update dashChunkRequested flag that the checkCleanup timer checks every interval 
@@ -123,6 +132,7 @@ class MpegDashStream {
 			delete this.dashProcess;
 		}
 		this.deleteFolderRecursive(path.join(config.WWW_ROOT, config.WEBM_CACHE, this.name));
+		this.fullfillPromises({'message':'stream terminated'}, null);
 	}
 	
 	deleteFolderRecursive(path) {

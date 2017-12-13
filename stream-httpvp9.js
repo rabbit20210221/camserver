@@ -32,8 +32,8 @@ class HttpVp9Stream {
 			self.clients = self.clients.filter(function(client) {
 				return (client != this);
 			}, client /* 'this' in filter callback */);
-			assert(self.clients.length < pre);
-			if (self.clients.length == 0) {
+			assert(self.clients.length === pre - 1);
+			if (self.clients.length === 0) {
 				console.log('HttpVp9Stream(' + self.name + ') no more vpx clients. stopping stream pid(' + self.ffmpeg.pid + ')') ;
 				self.terminate();
 			}
@@ -48,7 +48,7 @@ class HttpVp9Stream {
 			}
 		}
 		this.clients.push(client);
-		if (this.clients.length == 1) {
+		if (this.clients.length === 1) {
 			console.log('HttpVp9Stream(' + this.name + ') first vpx client. starting stream');
 			assert(!this.ffmpeg);
 			this.ffmpeg = child_process.spawn("ffmpeg", ['-i', this.rtspUrl, '-quality', 'realtime',
@@ -71,12 +71,12 @@ class HttpVp9Stream {
 			});
 			this.ffmpeg.on('error', function(error) {
 				console.log('HttpVp9Stream(' + self.name + ') vpx stream error pid (' + this.pid + ') error: ' + error.message);
-				if (self.ffmpeg && this.pid == self.ffmpeg.pid)
+				if (self.ffmpeg && this.pid === self.ffmpeg.pid)
 					self.terminate();
 			}.bind(this.ffmpeg)); // bind the stream object so we can match in the callback. sometimes a quick connect and disconnect may result in self.ffmpeg referring to the new instance in callback.
 			this.ffmpeg.on('exit', function(code, signal) {
 				console.log('HttpVp9Stream(' + self.name + ') vpx stream exit pid (' + this.pid + ') code(' + code + ') signal(' + signal + ')');
-				if (self.ffmpeg && this.pid == self.ffmpeg.pid)
+				if (self.ffmpeg && this.pid === self.ffmpeg.pid)
 					self.terminate();
 			}.bind(this.ffmpeg)); // bind the stream object so we can match in the callback. sometimes a quick connect and disconnect may result in self.ffmpeg referring to the new instance in callback.
 		}

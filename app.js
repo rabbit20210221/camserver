@@ -233,7 +233,7 @@ function serveStaticFiles(clientReq, clientRes, options) {
 					return (seps[2] === camera.name);
 				}, options);
 				if (camera) {
-					return camera.generateDashManifest(clientReq, clientRes, pathname, function(error) {
+					var promise = camera.generateDashManifest(clientReq, clientRes, pathname).then(function(error, result) {
 						if (error) {
 							clientRes.statusCode = 500;
 							return clientRes.end(error.message);
@@ -241,6 +241,7 @@ function serveStaticFiles(clientReq, clientRes, options) {
 						// Dash manifest ready
 						return sendFile(pathname, clientRes);
 					});
+					return;
 				}
 			}
 			// return 404
