@@ -24,12 +24,13 @@ class MpegDashStream {
 		self.promises.push(promise);
 		if (self.dashProcess) {
 			// another client has initiated the manifest generation
+			assert(this.promises.length > 1);
 			return promise;
 		}
 		self.deleteFolderRecursive(path.join(config.WWW_ROOT, config.WEBM_CACHE, self.name)); // this folder is not expected to exist. assert instead?
 		fs.mkdir(path.join(config.WWW_ROOT, config.WEBM_CACHE, self.name), function(error) {
 			if (error)
-				self.fullfillPromises(error, null);
+				return self.fullfillPromises(error, null);
 			// run first ffmpeg command to generate chunks and header files, this process will keep running
 			// to generate chunks continuously.
 			self.dashProcess = child_process.spawn("ffmpeg", [ '-rtsp_transport', 'tcp', '-i', self.rtspUrl,
