@@ -16,6 +16,7 @@ class MpegDashStream {
 		this.name = name;
 		this.rtspUrl = rtspUrl;
 		this.promises = [];
+		this.deleteFolderRecursive(path.join(config.WWW_ROOT, config.WEBM_CACHE, this.name));
 	}
 
 	generateManifest(clientReq, clientRes, pathname) {
@@ -96,7 +97,7 @@ class MpegDashStream {
 					self.terminate();
 				});
 			}, 10000);
-			//setTimeout(self.checkCleanup.bind(self), 60000);
+			setTimeout(self.checkCleanup.bind(self), 60000);
 		});
 		return promise;
 	}

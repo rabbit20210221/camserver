@@ -85,7 +85,7 @@ class HttpVp9Stream {
 	broadcast(data) {
 		var self = this;
 		self.clients.forEach(function(client) {
-			console.log('HttpVp9Stream(' + self.name + ') broadcasting to client ' + client.socket.remoteAddress + ':' + client.socket.remotePort);
+			//console.log('HttpVp9Stream(' + self.name + ') broadcasting to client ' + client.socket.remoteAddress + ':' + client.socket.remotePort);
 			client.write(data);
 		});
 	}
@@ -98,7 +98,7 @@ class HttpVp9Stream {
 		this.clients.forEach(function(client) {
 			client.end();
 		});
-		this.clients.splice(0, this.clients.length);
+		this.clients = [];
 		delete this.headers;
 	}
 }
