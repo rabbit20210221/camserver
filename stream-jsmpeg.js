@@ -36,7 +36,7 @@ class JsMpegStream {
 		// on first client connection, start ffmpeg
 		if (self.wsServer.clients.size === 1) {
 			assert(!self.ffmpeg);
-			self.ffmpeg = child_process.spawn('ffmpeg',  ['-i', self.rtspUrl, '-f', 'mpegts', '-codec:v', 'mpeg1video', '-bf', '0', '-codec:a', 'mp2', '-ar', '44100', '-ac', '1', '-b:a', '128k', '-r', '23', '-'], {
+			self.ffmpeg = child_process.spawn('ffmpeg',  ['-i', self.rtspUrl, '-f', 'mpegts', '-codec:v', 'mpeg1video', '-bf', '0', '-codec:a', 'mp2', '-ar', '44100', '-ac', '1', '-b:a', '128k', '-r', '25', '-'], {
 				detached: false
 			});
 			self.ffmpeg.stdout.on('data', function(data) {
@@ -64,7 +64,7 @@ class JsMpegStream {
 			}.bind(self.ffmpeg)); // bind the stream object so we can match in the callback. sometimes a quick connect and disconnect may result in self.ffmpeg referring to the new instance in callback.
 		}
 		socket.on('close', function(code, message) {
-			console.log('JsMpegStream(' + self.name + ') web socket disconnected ' + this._socket.remoteAddress + ' (' + self.wsServer.clients.size + ' total)');
+			console.log('JsMpegStream(' + self.name + ') web socket disconnected ' + (this._socket ? this._socket.remoteAddress : '') + ' (' + self.wsServer.clients.size + ' total)');
 			// kill ffmpeg when there are no more clients
 			if (self.wsServer.clients.size === 0)
 				self.terminate();
