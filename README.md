@@ -1,12 +1,9 @@
-This service takes RTSP feed from IP cameras and transcode the stream into 3 different encoding.
+This service takes RTSP feed from IP cameras and transcode the stream into 3 different encoding for delivery over HTTP
 
-1. MPEG DASH 
-See https://github.com/Dash-Industry-Forum/dash.js/wiki
+1. MPEG1 over web socket.<br/>Client uses jsmpeg javascript to render in a `<canvas>`
 
-2. MPEG-2 over websocket
-Uses JSmpeg client-side javascript for decoding in the browser
-see https://github.com/phoboslab/jsmpeg
+2. VP9/WEBM over HTTP.<br/> Client uses HTML `<video>` control
 
-3. Plain VP9 over HTTP
+3. MPEG DASH (VP9 WEBM chunk) over http<br/>Client uses mpeg dash javascript on top of `<video>`.<br/>See comments in stream-*.js for implementation details.
 
 Currently only supports ESCam G02 IP camera, but support for other cameras can be easily added.
